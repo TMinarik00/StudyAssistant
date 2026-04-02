@@ -1,0 +1,22 @@
+{
+  "name": "@farmapp/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "orval": "orval --config orval.config.ts"
+  },
+  "dependencies": {
+    "vue": "^3.5.31"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.5",
+    "@vitejs/plugin-vue": "^6.0.5",
+    "orval": "^8.6.2",
+    "tailwindcss": "^4.1.5",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.3",
+    "vue-tsc": "^3.2.6"
+  }
+}

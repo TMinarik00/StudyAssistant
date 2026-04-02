@@ -1,0 +1,637 @@
+openapi: 3.0.3
+info:
+  title: FarmApp API
+  version: 1.1.0
+  description: API za gamificirano ucenje farmakologije na hrvatskom jeziku.
+servers:
+  - url: /api
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Health check
+      responses:
+        "200":
+          description: API status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /players:
+    post:
+      operationId: createPlayer
+      summary: Create or reuse a player profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlayerRequest"
+      responses:
+        "200":
+          description: Existing player returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerProfile"
+        "201":
+          description: New player created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerProfile"
+  /topics:
+    get:
+      operationId: getTopics
+      summary: Get topic summaries
+      parameters:
+        - in: query
+          name: playerId
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: sourceImportId
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Topic summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TopicSummary"
+  /dashboard/{playerId}:
+    get:
+      operationId: getDashboard
+      summary: Get dashboard data for a player
+      parameters:
+        - in: path
+          name: playerId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
+  /quiz/next:
+    get:
+      operationId: getNextQuizCard
+      summary: Get the next quiz card
+      parameters:
+        - in: query
+          name: playerId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: topicId
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: sourceImportId
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Next question
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NextQuizCard"
+  /quiz/answer:
+    post:
+      operationId: submitQuizAnswer
+      summary: Submit an answer to a quiz card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuizAnswerRequest"
+      responses:
+        "200":
+          description: Answer result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuizAnswerResult"
+  /leaderboard:
+    get:
+      operationId: getLeaderboard
+      summary: Get leaderboard entries
+      responses:
+        "200":
+          description: Leaderboard
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LeaderboardEntry"
+  /imports:
+    get:
+      operationId: getImports
+      summary: Get available import collections
+      responses:
+        "200":
+          description: Import summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SourceImportSummary"
+    post:
+      operationId: createImport
+      summary: Publish a new question bank import
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportPayloadRequest"
+      responses:
+        "201":
+          description: Import published
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportPreview"
+  /imports/preview:
+    post:
+      operationId: previewImport
+      summary: Preview a question bank import before publishing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportPayloadRequest"
+      responses:
+        "200":
+          description: Import preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportPreview"
+  /imports/{importId}:
+    get:
+      operationId: getImportDetail
+      summary: Get import detail with lessons and topics
+      parameters:
+        - in: path
+          name: importId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Import detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportDetail"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      required:
+        - status
+        - service
+      properties:
+        status:
+          type: string
+        service:
+          type: string
+    CreatePlayerRequest:
+      type: object
+      required:
+        - nickname
+      properties:
+        nickname:
+          type: string
+    PlayerProfile:
+      type: object
+      required:
+        - id
+        - nickname
+        - xp
+        - level
+        - streak
+        - hearts
+        - totalAnswered
+        - correctAnswers
+        - accuracy
+      properties:
+        id:
+          type: string
+        nickname:
+          type: string
+        xp:
+          type: integer
+        level:
+          type: integer
+        streak:
+          type: integer
+        hearts:
+          type: integer
+        totalAnswered:
+          type: integer
+        correctAnswers:
+          type: integer
+        accuracy:
+          type: integer
+    TopicSummary:
+      type: object
+      required:
+        - id
+        - slug
+        - titleHr
+        - descriptionHr
+        - accent
+        - difficulty
+        - questionCount
+        - mastery
+        - sourceLabelHr
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        titleHr:
+          type: string
+        descriptionHr:
+          type: string
+        accent:
+          type: string
+        difficulty:
+          type: string
+          enum:
+            - EASY
+            - MEDIUM
+            - HARD
+        questionCount:
+          type: integer
+        mastery:
+          type: integer
+        sourceLabelHr:
+          type: string
+    DailyMission:
+      type: object
+      required:
+        - titleHr
+        - descriptionHr
+        - target
+        - current
+        - rewardXp
+      properties:
+        titleHr:
+          type: string
+        descriptionHr:
+          type: string
+        target:
+          type: integer
+        current:
+          type: integer
+        rewardXp:
+          type: integer
+    WeakTopic:
+      type: object
+      required:
+        - titleHr
+        - accuracy
+        - tipHr
+      properties:
+        titleHr:
+          type: string
+        accuracy:
+          type: integer
+        tipHr:
+          type: string
+    Dashboard:
+      type: object
+      required:
+        - player
+        - topics
+        - leaderboard
+        - imports
+        - dailyMission
+        - weakTopic
+      properties:
+        player:
+          $ref: "#/components/schemas/PlayerProfile"
+        topics:
+          type: array
+          items:
+            $ref: "#/components/schemas/TopicSummary"
+        leaderboard:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeaderboardEntry"
+        imports:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceImportSummary"
+        dailyMission:
+          $ref: "#/components/schemas/DailyMission"
+        weakTopic:
+          $ref: "#/components/schemas/WeakTopic"
+    QuizOption:
+      type: object
+      required:
+        - id
+        - textHr
+      properties:
+        id:
+          type: string
+        textHr:
+          type: string
+    NextQuizCard:
+      type: object
+      required:
+        - flashcardId
+        - topicId
+        - topicTitleHr
+        - questionHr
+        - options
+        - progressLabel
+        - difficulty
+      properties:
+        flashcardId:
+          type: string
+        topicId:
+          type: string
+        topicTitleHr:
+          type: string
+        questionHr:
+          type: string
+        options:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuizOption"
+        progressLabel:
+          type: string
+        difficulty:
+          type: string
+          enum:
+            - EASY
+            - MEDIUM
+            - HARD
+    QuizAnswerRequest:
+      type: object
+      required:
+        - playerId
+        - flashcardId
+        - selectedOptionId
+      properties:
+        playerId:
+          type: string
+        flashcardId:
+          type: string
+        selectedOptionId:
+          type: string
+    QuizAnswerResult:
+      type: object
+      required:
+        - isCorrect
+        - correctOptionId
+        - explanationHr
+        - xpEarned
+        - level
+        - xp
+        - streak
+        - hearts
+        - nextUnlockHr
+        - topicMastery
+      properties:
+        isCorrect:
+          type: boolean
+        correctOptionId:
+          type: string
+        explanationHr:
+          type: string
+        xpEarned:
+          type: integer
+        level:
+          type: integer
+        xp:
+          type: integer
+        streak:
+          type: integer
+        hearts:
+          type: integer
+        nextUnlockHr:
+          type: string
+        topicMastery:
+          type: integer
+    LeaderboardEntry:
+      type: object
+      required:
+        - nickname
+        - level
+        - xp
+        - streak
+      properties:
+        nickname:
+          type: string
+        level:
+          type: integer
+        xp:
+          type: integer
+        streak:
+          type: integer
+    SourceImportSummary:
+      type: object
+      required:
+        - id
+        - titleHr
+        - sourceType
+        - status
+        - createdAt
+        - topicCount
+        - lessonCount
+        - questionCount
+      properties:
+        id:
+          type: string
+        titleHr:
+          type: string
+        sourceType:
+          type: string
+          enum:
+            - SCRIPT
+            - JSON
+            - PDF
+        status:
+          type: string
+          enum:
+            - DRAFT
+            - PUBLISHED
+            - ARCHIVED
+        createdAt:
+          type: string
+          format: date-time
+        topicCount:
+          type: integer
+        lessonCount:
+          type: integer
+        questionCount:
+          type: integer
+    ImportPayloadRequest:
+      type: object
+      required:
+        - titleHr
+        - payloadText
+      properties:
+        titleHr:
+          type: string
+        payloadText:
+          type: string
+    StudyLesson:
+      type: object
+      required:
+        - id
+        - titleHr
+        - overviewHr
+        - sortOrder
+        - keyConceptsHr
+        - studyPromptsHr
+        - recallChecklistHr
+      properties:
+        id:
+          type: string
+        topicId:
+          type: string
+          nullable: true
+        titleHr:
+          type: string
+        overviewHr:
+          type: string
+        sourceSnippetHr:
+          type: string
+        sortOrder:
+          type: integer
+        keyConceptsHr:
+          type: array
+          items:
+            type: string
+        studyPromptsHr:
+          type: array
+          items:
+            type: string
+        recallChecklistHr:
+          type: array
+          items:
+            type: string
+    SampleQuestionPreview:
+      type: object
+      required:
+        - topicTitleHr
+        - questionHr
+        - correctAnswerHr
+        - explanationHr
+      properties:
+        topicTitleHr:
+          type: string
+        questionHr:
+          type: string
+        correctAnswerHr:
+          type: string
+        explanationHr:
+          type: string
+    ImportPreviewTopic:
+      type: object
+      required:
+        - slug
+        - titleHr
+        - descriptionHr
+        - accent
+        - difficulty
+        - questionCount
+      properties:
+        slug:
+          type: string
+        titleHr:
+          type: string
+        descriptionHr:
+          type: string
+        accent:
+          type: string
+        difficulty:
+          type: string
+          enum:
+            - EASY
+            - MEDIUM
+            - HARD
+        questionCount:
+          type: integer
+    ImportPreview:
+      type: object
+      required:
+        - titleHr
+        - sourceType
+        - topicCount
+        - questionCount
+        - topics
+        - lessons
+        - sampleQuestions
+      properties:
+        importId:
+          type: string
+        titleHr:
+          type: string
+        sourceType:
+          type: string
+          enum:
+            - SCRIPT
+            - JSON
+            - PDF
+        status:
+          type: string
+          enum:
+            - DRAFT
+            - PUBLISHED
+            - ARCHIVED
+        topicCount:
+          type: integer
+        questionCount:
+          type: integer
+        topics:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImportPreviewTopic"
+        lessons:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudyLesson"
+        sampleQuestions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SampleQuestionPreview"
+    ImportDetail:
+      type: object
+      required:
+        - import
+        - lessons
+        - topics
+      properties:
+        import:
+          $ref: "#/components/schemas/SourceImportSummary"
+        lessons:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudyLesson"
+        topics:
+          type: array
+          items:
+            $ref: "#/components/schemas/TopicSummary"

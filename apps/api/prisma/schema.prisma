@@ -1,0 +1,116 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum SourceType {
+  SCRIPT
+  JSON
+  PDF
+}
+
+enum ImportStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model Player {
+  id             String    @id @default(cuid())
+  nickname       String    @unique
+  xp             Int       @default(0)
+  level          Int       @default(1)
+  streak         Int       @default(0)
+  hearts         Int       @default(5)
+  totalAnswered  Int       @default(0)
+  correctAnswers Int       @default(0)
+  lastAnsweredAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  attempts       Attempt[]
+}
+
+model SourceImport {
+  id                String        @id @default(cuid())
+  titleHr           String
+  sourceType        SourceType
+  status            ImportStatus  @default(PUBLISHED)
+  rawPayload        String
+  normalizedPayload Json
+  improvedPayload   Json
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  topics            Topic[]
+  lessons           StudyLesson[]
+}
+
+model Topic {
+  id             String        @id @default(cuid())
+  slug           String        @unique
+  sourceImportId String?
+  titleHr        String
+  descriptionHr  String
+  accent         String
+  difficulty     Difficulty
+  flashcards     Flashcard[]
+  sourceImport   SourceImport? @relation(fields: [sourceImportId], references: [id], onDelete: SetNull)
+  lesson         StudyLesson?
+
+  @@index([sourceImportId])
+}
+
+model StudyLesson {
+  id             String       @id @default(cuid())
+  sourceImportId String
+  topicId        String?      @unique
+  titleHr        String
+  overviewHr     String
+  lessonJson     Json
+  sortOrder      Int          @default(0)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  sourceImport   SourceImport @relation(fields: [sourceImportId], references: [id], onDelete: Cascade)
+  topic          Topic?       @relation(fields: [topicId], references: [id], onDelete: SetNull)
+
+  @@index([sourceImportId, sortOrder])
+}
+
+model Flashcard {
+  id              String      @id @default(cuid())
+  topicId         String
+  questionHr      String
+  explanationHr   String
+  correctOptionId String
+  difficulty      Difficulty
+  sortOrder       Int         @default(0)
+  options         Json
+  topic           Topic       @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  attempts        Attempt[]
+
+  @@index([topicId, sortOrder])
+}
+
+model Attempt {
+  id               String    @id @default(cuid())
+  playerId         String
+  flashcardId      String
+  selectedOptionId String
+  isCorrect        Boolean
+  xpEarned         Int
+  answeredAt       DateTime  @default(now())
+  player           Player    @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  flashcard        Flashcard @relation(fields: [flashcardId], references: [id], onDelete: Cascade)
+
+  @@index([playerId, answeredAt])
+  @@index([playerId, flashcardId])
+}

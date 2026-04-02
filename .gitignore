@@ -1,0 +1,7 @@
+node_modules
+dist
+.env
+.DS_Store
+.codex-runtime
+apps/api/src/generated/prisma
+apps/web/src/api/generated

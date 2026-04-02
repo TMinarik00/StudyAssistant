@@ -1,0 +1,22 @@
+{
+  "name": "farmapp",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm:dev --workspace apps/api\" \"npm:dev --workspace apps/web\"",
+    "build": "npm run build --workspace apps/api && npm run build --workspace apps/web",
+    "orval": "npm run orval --workspace apps/web",
+    "prisma:generate": "npm run prisma:generate --workspace apps/api",
+    "prisma:push": "npm run prisma:push --workspace apps/api",
+    "prisma:seed": "npm run prisma:seed --workspace apps/api",
+    "questions:import": "npm run questions:import --workspace apps/api",
+    "docker:up": "docker compose up --build api db",
+    "docker:seed": "docker compose run --rm seed",
+    "docker:down": "docker compose down"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
