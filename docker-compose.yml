@@ -27,6 +27,8 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/farmapp?schema=public
       PORT: 3000
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_STUDY_MODEL: ${OPENAI_STUDY_MODEL:-gpt-4o-mini}
     ports:
       - "3000:3000"
 
@@ -40,7 +42,7 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/farmapp?schema=public
       PORT: 3000
-    command: ["sh", "-c", "npm run prisma:push --workspace apps/api && npm run prisma:seed --workspace apps/api"]
+    command: ["sh", "-c", "npm run prisma:seed --workspace apps/api"]
 
 volumes:
   postgres_data:

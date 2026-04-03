@@ -21,6 +21,13 @@ type LessonJson = {
   sourceSnippetHr?: string;
 };
 
+type ImprovedPayloadJson = {
+  summary?: {
+    processingMode?: "AI" | "HEURISTIC";
+    processingNotesHr?: string;
+  };
+};
+
 const createPlayerSchema = z.object({
   nickname: z
     .string()
@@ -49,6 +56,16 @@ const quizQuerySchema = z.object({
 const importIdParamSchema = z.object({
   importId: z.string().min(1),
 });
+
+const updateImportSchema = z
+  .object({
+    titleHr: z.string().trim().min(2).max(120).optional(),
+    isPinned: z.boolean().optional(),
+  })
+  .refine(
+    (value) => value.titleHr !== undefined || value.isPinned !== undefined,
+    "Nema promjena za spremanje.",
+  );
 
 const serializePlayer = (player: {
   id: string;
@@ -86,6 +103,18 @@ function serializeLessonPayload(lessonJson: unknown) {
   };
 }
 
+function serializeProcessingSummary(improvedPayload: unknown) {
+  const payload = (improvedPayload ?? {}) as ImprovedPayloadJson;
+
+  return {
+    processingMode: payload.summary?.processingMode === "AI" ? "AI" : "HEURISTIC",
+    processingNotesHr:
+      typeof payload.summary?.processingNotesHr === "string"
+        ? payload.summary.processingNotesHr
+        : "Sadrzaj je pripremljen za ucenje i test.",
+  };
+}
+
 async function getTopicSnapshots(input?: z.infer<typeof topicsQuerySchema>) {
   const query = topicsQuerySchema.parse(input ?? {});
 
@@ -93,8 +122,15 @@ async function getTopicSnapshots(input?: z.infer<typeof topicsQuerySchema>) {
     where: query.sourceImportId
       ? {
           sourceImportId: query.sourceImportId,
+          sourceImport: {
+            status: "PUBLISHED",
+          },
         }
-      : undefined,
+      : {
+          sourceImport: {
+            status: "PUBLISHED",
+          },
+        },
     orderBy: [{ titleHr: "asc" }],
     include: {
       sourceImport: true,
@@ -153,6 +189,9 @@ async function getLeaderboard(limit = 5) {
 
 async function getImportSummaries() {
   const imports = await prisma.sourceImport.findMany({
+    where: {
+      status: "PUBLISHED",
+    },
     orderBy: {
       createdAt: "desc",
     },
@@ -180,6 +219,8 @@ async function getImportSummaries() {
     titleHr: sourceImport.titleHr,
     sourceType: sourceImport.sourceType,
     status: sourceImport.status,
+    isPinned: sourceImport.isPinned,
+    isSystem: sourceImport.isSystem,
     createdAt: sourceImport.createdAt.toISOString(),
     topicCount: sourceImport.topics.length,
     lessonCount: sourceImport.lessons.length,
@@ -187,6 +228,7 @@ async function getImportSummaries() {
       (sum, topic) => sum + topic.flashcards.length,
       0,
     ),
+    ...serializeProcessingSummary(sourceImport.improvedPayload),
   }));
 }
 
@@ -220,12 +262,18 @@ async function getImportDetail(importId: string) {
     return null;
   }
 
+  if (sourceImport.status !== "PUBLISHED") {
+    return null;
+  }
+
   return {
     import: {
       id: sourceImport.id,
       titleHr: sourceImport.titleHr,
       sourceType: sourceImport.sourceType,
       status: sourceImport.status,
+      isPinned: sourceImport.isPinned,
+      isSystem: sourceImport.isSystem,
       createdAt: sourceImport.createdAt.toISOString(),
       topicCount: sourceImport.topics.length,
       lessonCount: sourceImport.lessons.length,
@@ -233,6 +281,7 @@ async function getImportDetail(importId: string) {
         (sum, topic) => sum + topic.flashcards.length,
         0,
       ),
+      ...serializeProcessingSummary(sourceImport.improvedPayload),
     },
     lessons: sourceImport.lessons.map((lesson) => ({
       id: lesson.id,
@@ -265,7 +314,7 @@ export function createApp() {
       credentials: false,
     }),
   );
-  app.use(express.json({ limit: "2mb" }));
+  app.use(express.json({ limit: "70mb" }));
 
   app.get("/api/health", (_request, response) => {
     response.json({
@@ -416,14 +465,28 @@ export function createApp() {
           where: query.topicId
             ? {
                 topicId: query.topicId,
+                topic: {
+                  sourceImport: {
+                    status: "PUBLISHED",
+                  },
+                },
               }
             : query.sourceImportId
               ? {
                   topic: {
                     sourceImportId: query.sourceImportId,
+                    sourceImport: {
+                      status: "PUBLISHED",
+                    },
                   },
                 }
-              : undefined,
+              : {
+                  topic: {
+                    sourceImport: {
+                      status: "PUBLISHED",
+                    },
+                  },
+                },
           include: {
             topic: true,
             attempts: {
@@ -624,14 +687,117 @@ export function createApp() {
     response.json(detail);
   });
 
+  app.patch("/api/imports/:importId", async (request, response) => {
+    try {
+      const { importId } = importIdParamSchema.parse(request.params);
+      const payload = updateImportSchema.parse(request.body);
+
+      const existingImport = await prisma.sourceImport.findUnique({
+        where: {
+          id: importId,
+        },
+      });
+
+      if (!existingImport || existingImport.status !== "PUBLISHED") {
+        return response.status(404).json({
+          message: "Predmet nije pronaden.",
+        });
+      }
+
+      if (existingImport.isSystem) {
+        return response.status(400).json({
+          message: "Training kolekcija je zakljucana i ne moze se mijenjati.",
+        });
+      }
+
+      await prisma.sourceImport.update({
+        where: {
+          id: importId,
+        },
+        data: {
+          titleHr: payload.titleHr ?? existingImport.titleHr,
+          isPinned: payload.isPinned ?? existingImport.isPinned,
+        },
+      });
+
+      const detail = await getImportDetail(importId);
+
+      response.json(detail?.import ?? null);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return response.status(400).json({
+          message: error.issues[0]?.message ?? "Promjena nije valjana.",
+        });
+      }
+
+      console.error(error);
+      response.status(500).json({
+        message: "Ne mogu spremiti promjene predmeta.",
+      });
+    }
+  });
+
+  app.delete("/api/imports/:importId", async (request, response) => {
+    try {
+      const { importId } = importIdParamSchema.parse(request.params);
+
+      const existingImport = await prisma.sourceImport.findUnique({
+        where: {
+          id: importId,
+        },
+      });
+
+      if (!existingImport || existingImport.status !== "PUBLISHED") {
+        return response.status(404).json({
+          message: "Predmet nije pronaden.",
+        });
+      }
+
+      if (existingImport.isSystem) {
+        return response.status(400).json({
+          message: "Training kolekcija se ne moze obrisati.",
+        });
+      }
+
+      await prisma.sourceImport.update({
+        where: {
+          id: importId,
+        },
+        data: {
+          status: "ARCHIVED",
+          isPinned: false,
+        },
+      });
+
+      response.status(204).send();
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return response.status(400).json({
+          message: "Brisanje nije valjano.",
+        });
+      }
+
+      console.error(error);
+      response.status(500).json({
+        message: "Ne mogu ukloniti predmet.",
+      });
+    }
+  });
+
   app.post("/api/imports/preview", async (request, response) => {
     try {
-      const preview = previewQuestionBankImport(importPayloadSchema.parse(request.body));
+      const preview = await previewQuestionBankImport(importPayloadSchema.parse(request.body));
       response.json(preview);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return response.status(400).json({
           message: error.issues[0]?.message ?? "Import nije valjan.",
+        });
+      }
+
+      if (error instanceof Error) {
+        return response.status(400).json({
+          message: error.message,
         });
       }
 
@@ -654,6 +820,12 @@ export function createApp() {
       if (error instanceof z.ZodError) {
         return response.status(400).json({
           message: error.issues[0]?.message ?? "Import nije valjan.",
+        });
+      }
+
+      if (error instanceof Error) {
+        return response.status(400).json({
+          message: error.message,
         });
       }
 

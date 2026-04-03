@@ -1,14 +1,17 @@
 # Doza Znanja
 
-Gamificirana web aplikacija za ucenje farmakologije na hrvatskom jeziku.
+Gamificirana web aplikacija za ucenje farmakologije na hrvatskom jeziku, sada
+organizirana kao library predmeta s posebnim `Home`, `Learn` i `Test` stranicama.
 
 ## Stack
 
-- `Vue 3 + Vite + Tailwind CSS` frontend
+- `Vue 3 + Vite + Tailwind CSS + Vue Router` frontend
 - `Node.js + Express` API
 - `Prisma` ORM
 - `PostgreSQL` u Docker Composeu
 - `Orval` generirani typed client iz OpenAPI specifikacije
+- `pdfjs-dist` za citanje PDF dokumenata u frontendu
+- `OpenAI` opcionalno za AI obradu cijelog TXT/PDF dokumenta
 
 ## Lokalni razvoj
 
@@ -16,6 +19,14 @@ Gamificirana web aplikacija za ucenje farmakologije na hrvatskom jeziku.
 
 ```bash
 npm install
+```
+
+Ako zelis puni AI import za velike skripte i PDF-ove, dodaj `.env` u root:
+
+```bash
+OPENAI_API_KEY=your_key_here
+# opcionalno
+OPENAI_STUDY_MODEL=gpt-4o-mini
 ```
 
 2. Pokreni bazu:
@@ -61,6 +72,8 @@ npm run docker:up
 npm run docker:seed
 ```
 
+Ovaj seed skript puni Docker bazu iz lokalnog workspacea, pa je rezultat isti kao i u razvoju.
+
 Nakon toga API radi na `http://localhost:3000`, a frontend mozes pokrenuti lokalno:
 
 ```bash
@@ -82,56 +95,36 @@ npm run docker:down
 
 ## Sto je ukljuceno
 
-- onboarding s lokalno spremljenim nadimkom
-- premium minimalisticki redesign s vise sekcija
-- hero pregled sesije, kurikulum, aktivna sesija i insights sekcija
-- dashboard s razinom, XP-om, streakom i srcima
-- adaptivni izbor sljedeceg pitanja
-- odabir teme ili "adaptivni mix"
-- povratna informacija nakon odgovora
-- leaderboard i dnevna misija
-- seedani skup pitanja iz osnovnih podrucja farmakologije
-- import skripta za vlastiti bank pitanja
-- in-app Import Center za obicnu skriptu, markdown ili question bank
-- Learn view koji iz importa radi pregledne lekcije i checklistu za repeticiju
-- quiz preview i scoped kviz iz tocno odabrane importirane kolekcije
-
-## Uvoz vlastitih pitanja
-
-Mozes definirati vlastitu skriptu ili JSON datoteku za pitanja.
-
-Predlozak se nalazi u:
-
-`apps/api/content/question-bank.template.ts`
-
-Import iz `apps/api` direktorija:
-
-```bash
-npm run questions:import -- ./content/question-bank.template.ts
-```
-
-Podrzano je:
-
-- `.ts`, `.js`, `.mjs` datoteka koja exporta `questionBank` ili `default`
-- `.json` datoteka istog oblika
-
-Napomena:
-
-- import pitanja resetira attempts i progress kako bi baza ostala konzistentna
-- seed i import koriste isti format, pa je lako zamijeniti demo sadrzaj vlastitim modulima
+- homepage library s istaknutom `Training` karticom
+- top add button za novi predmet i `+` kartica za dodavanje jos jednog
+- spremanje vlastitih predmeta iz `TXT` i `PDF` dokumenata
+- skripta se vise ne ispisuje kao raw tekst u UI-ju nakon importa
+- search bar po nazivu predmeta
+- abecedni redoslijed s mogucnoscu pinanja zvjezdicom na vrh
+- `show more` nakon prva 4 korisnicka predmeta
+- preimenovanje i brisanje korisnickih predmeta
+- `Learn` stranica za ucenje iz jednog predmeta
+- `Test` stranica za scoped kviz iz jednog predmeta
+- lokalno spremljen nadimak za pracenje XP-a, streaka i rezultata
+- AI preview i generation iz cijelog importiranog dokumenta kada je `OPENAI_API_KEY` postavljen
+- heuristicki fallback kada AI nije konfiguriran
+- backend i baza zajedno u Docker okruzenju
 
 ## Import kroz aplikaciju
 
 U `Import Center` tabu sada mozes:
 
-- zalijepiti obicnu skriptu, markdown biljeske ili gotov `questionBank`
-- ucitati `.txt`, `.md`, `.json`, `.ts`, `.js` ili `.mjs` datoteku
-- prvo dobiti preview tema, Learn lekcija i primjera kviz pitanja
-- tek nakon toga objaviti kolekciju i uciti ili kvizirati samo iz tog importa
+- ucitati `TXT` i `PDF` datoteke
+- dodijeliti naziv predmetu i kasnije ga preimenovati
+- dobiti preview Learn lekcija i primjera pitanja prije spremanja
+- spremiti predmet kao novu karticu u libraryju
+- otvoriti `Uci` ili `Uradi test` za tocno taj predmet
 
-Ako je ulaz vec strukturirani `questionBank`, aplikacija ga cita direktno.
-Ako je ulaz obicna skripta, aplikacija ga heuristicki dijeli po cjelinama, stvara
-lekcije za Learn view i generira pocetna kviz pitanja iz istog izvora.
+Kada je `OPENAI_API_KEY` postavljen, backend obraduje cijeli dokument i vraca
+cist Learn/Test sadrzaj bez prikaza sirovog teksta skripte u aplikaciji.
+
+Ako AI nije konfiguriran, aplikacija koristi lokalni fallback parser za TXT i
+PDF-ove koji imaju tekstualni sloj.
 
 ## Napomena o sadrzaju
 

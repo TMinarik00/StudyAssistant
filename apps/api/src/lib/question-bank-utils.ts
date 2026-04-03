@@ -4,8 +4,10 @@ import { pathToFileURL } from "node:url";
 import JSON5 from "json5";
 import { z } from "zod";
 import type { PrismaClient, SourceType } from "../generated/prisma/client.js";
+import { generateAiStudyMaterial } from "./ai-study-generator.js";
 
 const difficultySchema = z.enum(["EASY", "MEDIUM", "HARD"]);
+const sourceTypeSchema = z.enum(["SCRIPT", "JSON", "PDF"]);
 
 const optionSchema = z.object({
   id: z.string().trim().min(1),
@@ -50,10 +52,35 @@ const topicSchema = z.object({
 export const questionBankSchema = z.array(topicSchema).min(1);
 export const importPayloadSchema = z.object({
   titleHr: z.string().trim().min(2).max(120),
-  payloadText: z.string().trim().min(2),
+  payloadText: z.string().trim().optional().default(""),
+  sourceTypeHint: sourceTypeSchema.optional(),
+  originalFileName: z.string().trim().min(1).max(240).optional(),
+  pdfFileData: z.string().trim().min(1).optional(),
+  documentPageCount: z.number().int().positive().max(5_000).optional(),
+  documentByteSize: z.number().int().positive().max(100_000_000).optional(),
+}).superRefine((value, context) => {
+  const hasPayloadText = Boolean(value.payloadText?.trim());
+  const hasPdfFileData = Boolean(value.pdfFileData?.trim());
+
+  if (!hasPayloadText && !hasPdfFileData) {
+    context.addIssue({
+      code: "custom",
+      message: "Dodaj TXT sadrzaj ili PDF datoteku prije importa.",
+      path: ["payloadText"],
+    });
+  }
+
+  if (value.sourceTypeHint === "PDF" && !hasPdfFileData && !hasPayloadText) {
+    context.addIssue({
+      code: "custom",
+      message: "PDF import treba barem PDF datoteku ili citljiv tekst.",
+      path: ["pdfFileData"],
+    });
+  }
 });
 
 export type QuestionBank = z.infer<typeof questionBankSchema>;
+export type ProcessingMode = "AI" | "HEURISTIC";
 
 type LessonPayload = {
   id: string;
@@ -82,6 +109,21 @@ type SampleQuestionPreview = {
   explanationHr: string;
 };
 
+type ImportSummaryPayload = {
+  topicCount: number;
+  questionCount: number;
+  processingMode: ProcessingMode;
+  processingNotesHr: string;
+};
+
+type ParsedImportPayload = {
+  questionBank: QuestionBank;
+  sourceType: SourceType;
+  lessons?: LessonPayload[];
+  processingMode: ProcessingMode;
+  processingNotesHr: string;
+};
+
 type RawSection = {
   titleHr: string;
   bodyHr: string;
@@ -89,22 +131,29 @@ type RawSection = {
 };
 
 const ACCENT_PALETTE = [
-  "#1c7c6d",
-  "#8a5a34",
-  "#2f5b89",
-  "#6b7c45",
-  "#8c4b4b",
-  "#5f6b78",
+  "#0f766e",
+  "#2563eb",
+  "#b45309",
+  "#7c3aed",
+  "#be185d",
+  "#4d7c0f",
 ];
 
 const GENERIC_DISTRACTORS = [
   "Opisuje suprotan mehanizam djelovanja od navedenog u skripti.",
-  "Naglasak stavlja na laboratorijski artefakt, a ne na klinicki ucinak.",
-  "Tvrdnja vrijedi samo za potpuno drugu skupinu lijekova.",
-  "Odnosi se na izolirani tehnicki detalj koji nije istaknut u ovoj cjelini.",
-  "Skripta ne povezuje ovaj pojam s navedenim terapijskim ulogama.",
+  "Naglasak stavlja na laboratorijski detalj, a ne na klinicki ucinak.",
+  "Tvrdnja vrijedi za drugu skupinu lijekova nego u ovoj temi.",
+  "Odnosi se na izolirani tehnicki podatak koji nije istaknut u ovoj cjelini.",
+  "Skripta ne povezuje ovaj pojam s navedenom terapijskom ulogom.",
   "Ova tvrdnja pojednostavljuje temu i mijenja njezin glavni klinicki smisao.",
 ];
+
+const HEADING_SECTION_THRESHOLD = 3;
+const MAX_SECTION_BODY_LENGTH = 4_800;
+const MAX_FACTS_PER_SECTION = 12;
+const MAX_FLASHCARDS_PER_SECTION = 6;
+const MIN_FLASHCARDS_PER_SECTION = 3;
+const PAGE_MARKER_PATTERN = /\[\[PAGE:(\d+)\]\]/u;
 
 export const DEFAULT_QUESTION_BANK_PATH = path.resolve(process.cwd(), "prisma/seedData.ts");
 
@@ -131,7 +180,11 @@ function truncateText(value: string, limit: number) {
     return normalized;
   }
 
-  return `${normalized.slice(0, limit - 1).trim()}…`;
+  if (limit <= 3) {
+    return normalized.slice(0, limit);
+  }
+
+  return `${normalized.slice(0, limit - 3).trim()}...`;
 }
 
 function cleanInlineText(value: string) {
@@ -178,7 +231,18 @@ function looksLikeStructuredQuestionBank(payloadText: string) {
   return /\bquestionBank\b/.test(payloadText) || /\bflashcards\b/.test(payloadText);
 }
 
-function detectSourceType(payloadText: string): SourceType {
+function detectSourceType(
+  payloadText: string,
+  sourceTypeHint?: z.infer<typeof sourceTypeSchema>,
+): SourceType {
+  if (sourceTypeHint === "PDF") {
+    return "PDF";
+  }
+
+  if (sourceTypeHint === "SCRIPT" || sourceTypeHint === "JSON") {
+    return sourceTypeHint;
+  }
+
   const trimmed = payloadText.trim();
 
   if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
@@ -208,7 +272,7 @@ function cleanHeadingCandidate(value: string) {
   return value
     .replace(/^#{1,6}\s*/, "")
     .replace(/^\d+[\.\)]\s*/, "")
-    .replace(/[:\-–]\s*$/u, "")
+    .replace(/[:\-]\s*$/u, "")
     .trim();
 }
 
@@ -235,6 +299,146 @@ function extractSentences(value: string) {
     .split(/(?<=[.!?])\s+/u)
     .map(cleanInlineText)
     .filter((sentence) => sentence.length >= 35);
+}
+
+function extractPdfPageBodies(payloadText: string) {
+  const normalized = normalizeScriptText(payloadText);
+  const matches = normalized.matchAll(
+    /\[\[PAGE:(\d+)\]\]\s*([\s\S]*?)(?=\n\s*\[\[PAGE:\d+\]\]|$)/gu,
+  );
+  const pages = [...matches]
+    .map((match) => match[2]?.trim() ?? "")
+    .filter(Boolean);
+
+  return pages;
+}
+
+function resolveChunkHeading(bodyHr: string, titleHr: string, index: number) {
+  const lines = bodyHr
+    .split("\n")
+    .map((line) => line.replace(PAGE_MARKER_PATTERN, "").trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  const headingLine = lines.find((line) => isLikelyHeading(line));
+
+  if (headingLine) {
+    return cleanHeadingCandidate(headingLine);
+  }
+
+  const firstSentence = extractSentences(bodyHr)[0];
+
+  if (firstSentence) {
+    const concept = extractConceptLabel(firstSentence, "");
+
+    if (concept && concept.length >= 4 && concept.toLowerCase() !== titleHr.toLowerCase()) {
+      return truncateText(concept, 72);
+    }
+  }
+
+  return `${titleHr} cjelina ${index}`;
+}
+
+function chunkParagraphsIntoSections(paragraphs: string[], titleHr: string) {
+  const sections: RawSection[] = [];
+  let currentParagraphs: string[] = [];
+  let currentLength = 0;
+
+  const pushCurrent = () => {
+    if (!currentParagraphs.length) {
+      return;
+    }
+
+    const bodyHr = currentParagraphs.join("\n\n").trim();
+
+    if (!bodyHr) {
+      currentParagraphs = [];
+      currentLength = 0;
+      return;
+    }
+
+    sections.push({
+      titleHr: resolveChunkHeading(bodyHr, titleHr, sections.length + 1),
+      bodyHr,
+      facts: [],
+    });
+    currentParagraphs = [];
+    currentLength = 0;
+  };
+
+  for (const paragraph of paragraphs) {
+    const paragraphLength = paragraph.length;
+
+    if (currentLength > 0 && currentLength + paragraphLength > MAX_SECTION_BODY_LENGTH) {
+      pushCurrent();
+    }
+
+    currentParagraphs.push(paragraph);
+    currentLength += paragraphLength;
+  }
+
+  pushCurrent();
+
+  return sections;
+}
+
+function buildChunkedSections(payloadText: string, titleHr: string) {
+  const pageBodies = extractPdfPageBodies(payloadText);
+
+  if (pageBodies.length >= 2) {
+    const targetSectionCount = Math.min(14, Math.max(6, Math.ceil(pageBodies.length / 12)));
+    const pagesPerSection = Math.max(1, Math.ceil(pageBodies.length / targetSectionCount));
+    const sections: RawSection[] = [];
+
+    for (let index = 0; index < pageBodies.length; index += pagesPerSection) {
+      const bodyHr = pageBodies.slice(index, index + pagesPerSection).join("\n\n").trim();
+
+      if (!bodyHr) {
+        continue;
+      }
+
+      sections.push({
+        titleHr: resolveChunkHeading(bodyHr, titleHr, sections.length + 1),
+        bodyHr,
+        facts: [],
+      });
+    }
+
+    if (sections.length > 1) {
+      return sections;
+    }
+  }
+
+  const normalized = normalizeScriptText(payloadText)
+    .replace(/\[\[PAGE:\d+\]\]/gu, "")
+    .trim();
+  const paragraphs = normalized
+    .split(/\n\s*\n+/u)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length >= 2) {
+    return chunkParagraphsIntoSections(paragraphs, titleHr);
+  }
+
+  const sentences = extractSentences(normalized);
+
+  if (sentences.length >= 6) {
+    const syntheticParagraphs: string[] = [];
+
+    for (let index = 0; index < sentences.length; index += 8) {
+      syntheticParagraphs.push(sentences.slice(index, index + 8).join(" "));
+    }
+
+    return chunkParagraphsIntoSections(syntheticParagraphs, titleHr);
+  }
+
+  return [
+    {
+      titleHr,
+      bodyHr: normalized,
+      facts: [],
+    },
+  ];
 }
 
 function splitScriptIntoSections(payloadText: string, titleHr: string): RawSection[] {
@@ -268,11 +472,13 @@ function splitScriptIntoSections(payloadText: string, titleHr: string): RawSecti
     }
 
     const firstLine = lines[0];
+    const isPageMarker = PAGE_MARKER_PATTERN.test(firstLine);
     const heading = cleanHeadingCandidate(firstLine);
-    const isHeadingOnly = lines.length === 1 && isLikelyHeading(firstLine);
+    const isHeadingOnly = lines.length === 1 && !isPageMarker && isLikelyHeading(firstLine);
     const isTitledBlock =
+      !isPageMarker &&
       lines.length > 1 &&
-      (isLikelyHeading(firstLine) || /^[A-ZČĆŽŠĐa-zčćžšđ0-9][^.!?]{3,80}:\s*$/u.test(firstLine));
+      (isLikelyHeading(firstLine) || /^[A-Za-z0-9][^.!?]{3,80}:\s*$/u.test(firstLine));
 
     if (isHeadingOnly) {
       pushCurrent();
@@ -299,40 +505,49 @@ function splitScriptIntoSections(payloadText: string, titleHr: string): RawSecti
       };
     }
 
-    current.bodyParts.push(block);
+    const blockBody = isPageMarker ? lines.slice(1).join("\n") : block;
+
+    if (blockBody.trim()) {
+      current.bodyParts.push(blockBody);
+    }
   }
 
   pushCurrent();
 
-  if (sections.length === 0) {
-    return [
-      {
-        titleHr,
-        bodyHr: normalized,
-        facts: [],
-      },
-    ];
-  }
-
-  return sections.map((section) => ({
+  const resolvedSections = sections.map((section) => ({
     titleHr: section.titleHr,
     bodyHr: section.bodyParts[0],
     facts: [],
   }));
+
+  const needsChunking =
+    resolvedSections.length === 0 ||
+    resolvedSections.length < HEADING_SECTION_THRESHOLD ||
+    resolvedSections.some((section) => section.bodyHr.length > MAX_SECTION_BODY_LENGTH) ||
+    (extractPdfPageBodies(payloadText).length >= 6 && resolvedSections.length <= 2);
+
+  if (needsChunking) {
+    return buildChunkedSections(payloadText, titleHr);
+  }
+
+  return resolvedSections;
 }
 
 function extractFactsFromSection(section: RawSection) {
   const bulletFacts = section.bodyHr
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => /^[\-\*\u2022]/u.test(line) || /^[A-ZČĆŽŠĐa-zčćžšđ0-9][^.!?]{3,80}:\s+/u.test(line))
+    .filter(
+      (line) =>
+        /^[\-\*\u2022]/u.test(line) || /^[A-Za-z0-9][^.!?]{3,80}:\s+/u.test(line),
+    )
     .map(cleanInlineText);
 
   const sentences = extractSentences(section.bodyHr)
     .map((sentence) => truncateText(sentence.replace(/\.$/, ""), 180))
     .filter((sentence) => sentence.length >= 25);
 
-  const facts = uniqueStrings([...bulletFacts, ...sentences]).slice(0, 8);
+  const facts = uniqueStrings([...bulletFacts, ...sentences]).slice(0, MAX_FACTS_PER_SECTION);
 
   return facts.length > 0
     ? facts
@@ -344,13 +559,13 @@ function extractConceptLabel(statementHr: string, fallbackTitleHr: string) {
     .replace(/^Tocno prema importiranoj skripti:\s*/u, "")
     .replace(/\.$/, "")
     .trim();
-  const separatorMatch = normalized.match(/^([^:–-]{3,60})[:–-]\s+/u);
+  const separatorMatch = normalized.match(/^([^:-]{3,60})[:-]\s+/u);
 
   if (separatorMatch?.[1]) {
     return separatorMatch[1].trim();
   }
 
-  const definitionMatch = normalized.match(/^([A-ZČĆŽŠĐa-zčćžšđ0-9][^,]{3,60})\s+(je|su)\b/u);
+  const definitionMatch = normalized.match(/^([A-Za-z0-9][^,]{3,60})\s+(je|su)\b/u);
 
   if (definitionMatch?.[1]) {
     return definitionMatch[1].trim();
@@ -394,7 +609,18 @@ function buildOptions(correctAnswerHr: string, distractorPool: string[], seed: n
   };
 }
 
-function inferDifficulty(questionCount: number, bodyLength: number): QuestionBank[number]["difficulty"] {
+function buildOptionsFromAnswers(
+  correctAnswerHr: string,
+  distractorsHr: string[],
+  seed: number,
+) {
+  return buildOptions(correctAnswerHr, distractorsHr, seed);
+}
+
+function inferDifficulty(
+  questionCount: number,
+  bodyLength: number,
+): QuestionBank[number]["difficulty"] {
   if (questionCount >= 4 || bodyLength > 1100) {
     return "HARD";
   }
@@ -419,7 +645,11 @@ function buildTopicDescription(section: RawSection) {
   );
 }
 
-function buildLessonPayload(topic: QuestionBank[number], sortOrder: number, sourceSnippetHr?: string): LessonPayload {
+function buildLessonPayload(
+  topic: QuestionBank[number],
+  sortOrder: number,
+  sourceSnippetHr?: string,
+): LessonPayload {
   const keyConceptsHr = uniqueStrings(
     topic.flashcards.map((flashcard) =>
       extractConceptLabel(flashcard.explanationHr, topic.titleHr),
@@ -432,20 +662,72 @@ function buildLessonPayload(topic: QuestionBank[number], sortOrder: number, sour
 
   const recallChecklistHr = [
     `Prodji ${topic.flashcards.length} pitanja za temu ${topic.titleHr.toLowerCase()}.`,
-    `Povezi kljucne pojmove s objasnjenjima prije nego otvoris kviz.`,
+    "Povezi kljucne pojmove s objasnjenjima prije nego otvoris test.",
     `Provjeri razumijes li zasto je razina tezine oznacena kao ${topic.difficulty.toLowerCase()}.`,
   ];
 
   return {
     id: `preview-${sortOrder}`,
     titleHr: topic.titleHr,
-    overviewHr: `${topic.descriptionHr} Ova verzija pretvara importirani materijal u jasne blokove za ucenje i brzu repeticiju prije kviza.`,
+    overviewHr: `${topic.descriptionHr} Ova verzija pretvara importirani materijal u jasne blokove za ucenje i brzu repeticiju prije testa.`,
     sourceSnippetHr,
     keyConceptsHr,
     studyPromptsHr,
     recallChecklistHr,
     sortOrder,
   };
+}
+
+function buildLessonPayloadsFromQuestionBank(
+  questionBank: QuestionBank,
+  sourceSnippets?: string[],
+) {
+  return questionBank.map((topic, index) =>
+    buildLessonPayload(topic, index + 1, sourceSnippets?.[index]),
+  );
+}
+
+function buildQuestionBankFromAiMaterial(
+  material: NonNullable<Awaited<ReturnType<typeof generateAiStudyMaterial>>>,
+): QuestionBank {
+  const topics = material.lessons.map((lesson, lessonIndex) => ({
+    slug: `${slugify(lesson.titleHr)}-${lessonIndex + 1}`,
+    titleHr: lesson.titleHr,
+    descriptionHr: lesson.topicDescriptionHr,
+    accent: ACCENT_PALETTE[lessonIndex % ACCENT_PALETTE.length],
+    difficulty: lesson.difficulty,
+    flashcards: lesson.flashcards.map((flashcard, flashcardIndex) => {
+      const { options, correctOptionId } = buildOptionsFromAnswers(
+        flashcard.correctAnswerHr,
+        flashcard.distractorsHr,
+        lessonIndex + flashcardIndex + 1,
+      );
+
+      return {
+        questionHr: flashcard.questionHr,
+        explanationHr: flashcard.explanationHr,
+        correctOptionId,
+        difficulty: flashcard.difficulty,
+        options,
+      };
+    }),
+  }));
+
+  return questionBankSchema.parse(topics);
+}
+
+function buildLessonPayloadsFromAiMaterial(
+  material: NonNullable<Awaited<ReturnType<typeof generateAiStudyMaterial>>>,
+) {
+  return material.lessons.map((lesson, index) => ({
+    id: `preview-${index + 1}`,
+    titleHr: lesson.titleHr,
+    overviewHr: lesson.overviewHr,
+    keyConceptsHr: uniqueStrings(lesson.keyConceptsHr).slice(0, 6),
+    studyPromptsHr: uniqueStrings(lesson.studyPromptsHr).slice(0, 4),
+    recallChecklistHr: uniqueStrings(lesson.recallChecklistHr).slice(0, 5),
+    sortOrder: index + 1,
+  }));
 }
 
 function buildQuestionBankFromScript(payloadText: string, titleHr: string): QuestionBank {
@@ -459,18 +741,28 @@ function buildQuestionBankFromScript(payloadText: string, titleHr: string): Ques
   const topics = sections.map((section, index) => {
     const facts = section.facts;
     const difficulty = inferDifficulty(facts.length, section.bodyHr.length);
-    const flashcards = facts.slice(0, Math.max(1, Math.min(4, facts.length))).map((fact, factIndex) => {
-      const distractorPool = factPool.filter((candidate) => candidate !== fact);
-      const { options, correctOptionId } = buildOptions(fact, distractorPool, index + factIndex + 1);
+    const flashcardLimit = Math.max(
+      Math.min(MIN_FLASHCARDS_PER_SECTION, facts.length),
+      Math.min(MAX_FLASHCARDS_PER_SECTION, Math.ceil(facts.length * 0.6)),
+    );
+    const flashcards = facts
+      .slice(0, Math.max(1, flashcardLimit))
+      .map((fact, factIndex) => {
+        const distractorPool = factPool.filter((candidate) => candidate !== fact);
+        const { options, correctOptionId } = buildOptions(
+          fact,
+          distractorPool,
+          index + factIndex + 1,
+        );
 
-      return {
-        questionHr: buildQuestionStem(fact, section.titleHr),
-        explanationHr: `Tocno prema importiranoj skripti: ${fact}`,
-        correctOptionId,
-        difficulty,
-        options,
-      };
-    });
+        return {
+          questionHr: buildQuestionStem(fact, section.titleHr),
+          explanationHr: `Tocno prema importiranoj skripti: ${fact}`,
+          correctOptionId,
+          difficulty,
+          options,
+        };
+      });
 
     return {
       slug: `${slugify(section.titleHr)}-${index + 1}`,
@@ -485,33 +777,84 @@ function buildQuestionBankFromScript(payloadText: string, titleHr: string): Ques
   return questionBankSchema.parse(topics);
 }
 
-function parseImportedPayload(payloadText: string, titleHr: string) {
-  const sourceType = detectSourceType(payloadText);
+async function parseImportedPayload(
+  input: z.infer<typeof importPayloadSchema>,
+): Promise<ParsedImportPayload> {
+  const payloadText = input.payloadText ?? "";
+  const sourceType = detectSourceType(payloadText, input.sourceTypeHint);
 
   if (sourceType === "JSON") {
+    const questionBank = parseQuestionBankFromText(payloadText);
+
     return {
-      questionBank: parseQuestionBankFromText(payloadText),
+      questionBank,
       sourceType,
+      lessons: buildLessonPayloadsFromQuestionBank(questionBank),
+      processingMode: "HEURISTIC",
+      processingNotesHr:
+        "Strukturirani question bank je procitan izravno i pretvoren u Learn i Test sadrzaj.",
     };
   }
 
   if (looksLikeStructuredQuestionBank(payloadText)) {
     try {
+      const questionBank = parseQuestionBankFromText(payloadText);
+
       return {
-        questionBank: parseQuestionBankFromText(payloadText),
+        questionBank,
         sourceType,
+        lessons: buildLessonPayloadsFromQuestionBank(questionBank),
+        processingMode: "HEURISTIC",
+        processingNotesHr:
+          "Strukturirani question bank je pronaden u skripti pa nije trebala dodatna AI obrada.",
       };
     } catch {
-      return {
-        questionBank: buildQuestionBankFromScript(payloadText, titleHr),
-        sourceType: "SCRIPT" as const,
-      };
+      // Continue into the document-processing path.
     }
   }
 
+  try {
+    const aiMaterial = await generateAiStudyMaterial({
+      titleHr: input.titleHr,
+      payloadText,
+      pdfFileData: input.pdfFileData,
+      originalFileName: input.originalFileName,
+    });
+
+    if (aiMaterial) {
+      return {
+        questionBank: buildQuestionBankFromAiMaterial(aiMaterial),
+        sourceType,
+        lessons: buildLessonPayloadsFromAiMaterial(aiMaterial),
+        processingMode: "AI",
+        processingNotesHr: aiMaterial.processingNotesHr,
+      };
+    }
+  } catch (error) {
+    console.warn("AI import processing failed, falling back to heuristic mode.", error);
+  }
+
+  if (!payloadText.trim()) {
+    throw new Error(
+      "PDF je ucitan, ali nema lokalno izdvojen tekst, a AI obrada nije dostupna. Dodaj OPENAI_API_KEY ili probaj PDF s tekstualnim slojem.",
+    );
+  }
+
+  const questionBank = buildQuestionBankFromScript(payloadText, input.titleHr);
+  const sourceSnippets =
+    sourceType === "SCRIPT" || sourceType === "PDF"
+      ? splitScriptIntoSections(payloadText, input.titleHr).map((section) =>
+          truncateText(section.bodyHr, 220),
+        )
+      : undefined;
+
   return {
-    questionBank: buildQuestionBankFromScript(payloadText, titleHr),
-    sourceType: "SCRIPT" as const,
+    questionBank,
+    sourceType,
+    lessons: buildLessonPayloadsFromQuestionBank(questionBank, sourceSnippets),
+    processingMode: "HEURISTIC",
+    processingNotesHr:
+      "Skripta je obradena lokalnim parserom jer AI nije konfiguriran ili obrada nije uspjela.",
   };
 }
 
@@ -538,7 +881,12 @@ export function buildImportPreview(
   questionBank: QuestionBank,
   titleHr: string,
   sourceType: SourceType,
-  sourceSnippets?: string[],
+  options?: {
+    lessons?: LessonPayload[];
+    processingMode?: ProcessingMode;
+    processingNotesHr?: string;
+    sourceSnippets?: string[];
+  },
 ) {
   const topics: TopicPreview[] = questionBank.map((topic) => ({
     slug: topic.slug,
@@ -549,14 +897,20 @@ export function buildImportPreview(
     questionCount: topic.flashcards.length,
   }));
 
-  const lessons = questionBank.map((topic, index) =>
-    buildLessonPayload(topic, index + 1, sourceSnippets?.[index]),
+  const lessons =
+    options?.lessons ??
+    buildLessonPayloadsFromQuestionBank(questionBank, options?.sourceSnippets);
+  const questionCount = questionBank.reduce(
+    (sum, topic) => sum + topic.flashcards.length,
+    0,
   );
-  const questionCount = questionBank.reduce((sum, topic) => sum + topic.flashcards.length, 0);
 
   return {
     titleHr,
     sourceType,
+    processingMode: options?.processingMode ?? "HEURISTIC",
+    processingNotesHr:
+      options?.processingNotesHr ?? "Sadrzaj je pripremljen za Learn i Test prikaz.",
     topicCount: topics.length,
     questionCount,
     topics,
@@ -579,59 +933,80 @@ export async function loadQuestionBank(inputPath?: string): Promise<QuestionBank
   return questionBankSchema.parse(rawData);
 }
 
-export function previewQuestionBankImport(input: z.infer<typeof importPayloadSchema>) {
+export async function previewQuestionBankImport(input: z.infer<typeof importPayloadSchema>) {
   const payload = importPayloadSchema.parse(input);
-  const parsed = parseImportedPayload(payload.payloadText, payload.titleHr);
+  const parsed = await parseImportedPayload(payload);
   const sourceSnippets =
-    parsed.sourceType === "SCRIPT"
+    !parsed.lessons &&
+    (parsed.sourceType === "SCRIPT" || parsed.sourceType === "PDF") &&
+    payload.payloadText
       ? splitScriptIntoSections(payload.payloadText, payload.titleHr).map((section) =>
           truncateText(section.bodyHr, 260),
         )
       : undefined;
 
-  return buildImportPreview(
-    parsed.questionBank,
-    payload.titleHr,
-    parsed.sourceType,
+  return buildImportPreview(parsed.questionBank, payload.titleHr, parsed.sourceType, {
+    lessons: parsed.lessons,
+    processingMode: parsed.processingMode,
+    processingNotesHr: parsed.processingNotesHr,
     sourceSnippets,
-  );
+  });
 }
 
 export async function createSourceImport(
   prisma: PrismaClient,
   input: {
     titleHr: string;
-    payloadText: string;
+    payloadText?: string;
+    sourceTypeHint?: z.infer<typeof sourceTypeSchema>;
+    originalFileName?: string;
+    pdfFileData?: string;
+    documentPageCount?: number;
+    documentByteSize?: number;
     status?: "DRAFT" | "PUBLISHED" | "ARCHIVED";
+    isPinned?: boolean;
+    isSystem?: boolean;
   },
 ) {
   const payload = importPayloadSchema.parse(input);
-  const parsed = parseImportedPayload(payload.payloadText, payload.titleHr);
+  const parsed = await parseImportedPayload(payload);
   const sourceSnippets =
-    parsed.sourceType === "SCRIPT"
+    !parsed.lessons &&
+    (parsed.sourceType === "SCRIPT" || parsed.sourceType === "PDF") &&
+    payload.payloadText
       ? splitScriptIntoSections(payload.payloadText, payload.titleHr).map((section) =>
           truncateText(section.bodyHr, 260),
         )
       : undefined;
-  const preview = buildImportPreview(
-    parsed.questionBank,
-    payload.titleHr,
-    parsed.sourceType,
+  const preview = buildImportPreview(parsed.questionBank, payload.titleHr, parsed.sourceType, {
+    lessons: parsed.lessons,
+    processingMode: parsed.processingMode,
+    processingNotesHr: parsed.processingNotesHr,
     sourceSnippets,
-  );
+  });
+  const rawPayload =
+    payload.payloadText?.trim() ||
+    `[PDF import bez lokalnog teksta] ${payload.originalFileName ?? payload.titleHr}`;
 
   const sourceImport = await prisma.sourceImport.create({
     data: {
       titleHr: preview.titleHr,
       sourceType: parsed.sourceType,
       status: input.status ?? "PUBLISHED",
-      rawPayload: payload.payloadText,
+      isPinned: input.isPinned ?? false,
+      isSystem: input.isSystem ?? false,
+      rawPayload,
       normalizedPayload: parsed.questionBank,
       improvedPayload: {
         lessons: preview.lessons,
         summary: {
           topicCount: preview.topicCount,
           questionCount: preview.questionCount,
+          processingMode: parsed.processingMode,
+          processingNotesHr: parsed.processingNotesHr,
+          documentPageCount: payload.documentPageCount,
+          documentByteSize: payload.documentByteSize,
+          originalFileName: payload.originalFileName,
         },
         sampleQuestions: preview.sampleQuestions,
       },
@@ -642,7 +1017,11 @@ export async function createSourceImport(
     const createdTopic = await prisma.topic.create({
       data: {
         slug: buildStoredTopicSlug(topic.slug, sourceImport.id),
-        sourceImportId: sourceImport.id,
+        sourceImport: {
+          connect: {
+            id: sourceImport.id,
+          },
+        },
         titleHr: topic.titleHr,
         descriptionHr: topic.descriptionHr,
         accent: topic.accent,
@@ -664,12 +1043,82 @@ export async function createSourceImport(
 
     await prisma.studyLesson.create({
       data: {
-        sourceImportId: sourceImport.id,
-        topicId: createdTopic.id,
+        sourceImport: {
+          connect: {
+            id: sourceImport.id,
+          },
+        },
+        topic: {
+          connect: {
+            id: createdTopic.id,
+          },
+        },
         titleHr: lesson.titleHr,
         overviewHr: lesson.overviewHr,
         lessonJson: lesson,
         sortOrder: lesson.sortOrder,
+      },
+    });
+  }
+
+  const linkedTopics = await prisma.topic.findMany({
+    where: {
+      sourceImportId: sourceImport.id,
+    },
+    select: {
+      id: true,
+      titleHr: true,
+      descriptionHr: true,
+    },
+  });
+
+  for (const topic of parsed.questionBank) {
+    const linkedTopic = linkedTopics.find(
+      (candidate) =>
+        candidate.titleHr === topic.titleHr &&
+        candidate.descriptionHr === topic.descriptionHr,
+    );
+
+    if (!linkedTopic) {
+      await prisma.topic.updateMany({
+        where: {
+          sourceImportId: null,
+          titleHr: topic.titleHr,
+          descriptionHr: topic.descriptionHr,
+        },
+        data: {
+          sourceImportId: sourceImport.id,
+        },
+      });
+    }
+  }
+
+  const repairedTopics = await prisma.topic.findMany({
+    where: {
+      sourceImportId: sourceImport.id,
+    },
+    select: {
+      id: true,
+      titleHr: true,
+      descriptionHr: true,
+    },
+  });
+
+  for (const lesson of preview.lessons) {
+    const matchingTopic = repairedTopics.find((topic) => topic.titleHr === lesson.titleHr);
+
+    if (!matchingTopic) {
+      continue;
+    }
+
+    await prisma.studyLesson.updateMany({
+      where: {
+        sourceImportId: sourceImport.id,
+        titleHr: lesson.titleHr,
+        topicId: null,
+      },
+      data: {
+        topicId: matchingTopic.id,
       },
     });
   }
@@ -679,6 +1128,10 @@ export async function createSourceImport(
     titleHr: sourceImport.titleHr,
     sourceType: sourceImport.sourceType,
     status: sourceImport.status,
+    isPinned: sourceImport.isPinned,
+    isSystem: sourceImport.isSystem,
+    processingMode: parsed.processingMode,
+    processingNotesHr: parsed.processingNotesHr,
     topicCount: preview.topicCount,
     questionCount: preview.questionCount,
     lessons: preview.lessons,
@@ -690,7 +1143,7 @@ export async function createSourceImport(
 export async function replaceQuestionBank(
   prisma: PrismaClient,
   questionBank: QuestionBank,
-  titleHr = "Demo farmakologija",
+  titleHr = "Training",
 ) {
   await prisma.$transaction([
     prisma.attempt.deleteMany(),
@@ -714,6 +1167,9 @@ export async function replaceQuestionBank(
   return createSourceImport(prisma, {
     titleHr,
     payloadText: JSON.stringify(questionBank, null, 2),
+    sourceTypeHint: "JSON",
     status: "PUBLISHED",
+    isPinned: true,
+    isSystem: true,
   });
 }

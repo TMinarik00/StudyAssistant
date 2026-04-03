@@ -167,23 +167,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ImportPreview"
-  /imports/preview:
-    post:
-      operationId: previewImport
-      summary: Preview a question bank import before publishing
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ImportPayloadRequest"
-      responses:
-        "200":
-          description: Import preview
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ImportPreview"
   /imports/{importId}:
     get:
       operationId: getImportDetail
@@ -201,6 +184,57 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ImportDetail"
+    patch:
+      operationId: updateImport
+      summary: Rename a subject or toggle its star state
+      parameters:
+        - in: path
+          name: importId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateImportRequest"
+      responses:
+        "200":
+          description: Updated import summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceImportSummary"
+    delete:
+      operationId: deleteImport
+      summary: Archive a subject so it no longer appears in the library
+      parameters:
+        - in: path
+          name: importId
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Import archived
+  /imports/preview:
+    post:
+      operationId: previewImport
+      summary: Preview a question bank import before publishing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportPayloadRequest"
+      responses:
+        "200":
+          description: Import preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportPreview"
 components:
   schemas:
     HealthStatus:
@@ -457,10 +491,14 @@ components:
         - titleHr
         - sourceType
         - status
+        - isPinned
+        - isSystem
         - createdAt
         - topicCount
         - lessonCount
         - questionCount
+        - processingMode
+        - processingNotesHr
       properties:
         id:
           type: string
@@ -478,6 +516,10 @@ components:
             - DRAFT
             - PUBLISHED
             - ARCHIVED
+        isPinned:
+          type: boolean
+        isSystem:
+          type: boolean
         createdAt:
           type: string
           format: date-time
@@ -487,16 +529,43 @@ components:
           type: integer
         questionCount:
           type: integer
+        processingMode:
+          type: string
+          enum:
+            - AI
+            - HEURISTIC
+        processingNotesHr:
+          type: string
     ImportPayloadRequest:
       type: object
       required:
         - titleHr
-        - payloadText
       properties:
         titleHr:
           type: string
         payloadText:
           type: string
+        originalFileName:
+          type: string
+        pdfFileData:
+          type: string
+        documentPageCount:
+          type: integer
+        documentByteSize:
+          type: integer
+        sourceTypeHint:
+          type: string
+          enum:
+            - SCRIPT
+            - JSON
+            - PDF
+    UpdateImportRequest:
+      type: object
+      properties:
+        titleHr:
+          type: string
+        isPinned:
+          type: boolean
     StudyLesson:
       type: object
       required:
@@ -580,6 +649,8 @@ components:
       required:
         - titleHr
         - sourceType
+        - processingMode
+        - processingNotesHr
         - topicCount
         - questionCount
         - topics
@@ -602,6 +673,17 @@ components:
             - DRAFT
             - PUBLISHED
             - ARCHIVED
+        isPinned:
+          type: boolean
+        isSystem:
+          type: boolean
+        processingMode:
+          type: string
+          enum:
+            - AI
+            - HEURISTIC
+        processingNotesHr:
+          type: string
         topicCount:
           type: integer
         questionCount:

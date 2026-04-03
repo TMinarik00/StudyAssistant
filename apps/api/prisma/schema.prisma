@@ -45,6 +45,8 @@ model SourceImport {
   titleHr           String
   sourceType        SourceType
   status            ImportStatus  @default(PUBLISHED)
+  isPinned          Boolean       @default(false)
+  isSystem          Boolean       @default(false)
   rawPayload        String
   normalizedPayload Json
   improvedPayload   Json

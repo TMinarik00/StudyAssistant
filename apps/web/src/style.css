@@ -1,11 +1,14 @@
-@import url("https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Manrope:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Sora:wght@400;500;600;700&display=swap");
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Manrope", sans-serif;
-  --font-serif: "Cormorant Garamond", serif;
-  --color-paper: #f5f1e8;
-  --color-ink: #171410;
+  --font-sans: "Sora", sans-serif;
+  --font-display: "Fraunces", serif;
+  --color-cloud: #fff7ef;
+  --color-ink: #161521;
+  --color-mist: #f0ebe5;
+  --color-blush: #ff8c62;
+  --color-aqua: #39d6c3;
 }
 
 @layer base {
@@ -22,10 +25,10 @@
 
   body {
     background:
-      radial-gradient(circle at top left, rgba(28, 124, 109, 0.08), transparent 28%),
-      radial-gradient(circle at bottom right, rgba(205, 182, 116, 0.09), transparent 26%),
-      #f5f1e8;
-    color: #171410;
+      radial-gradient(circle at top left, rgba(255, 140, 98, 0.12), transparent 26%),
+      radial-gradient(circle at top right, rgba(57, 214, 195, 0.11), transparent 26%),
+      linear-gradient(180deg, #fff8f1 0%, #fff3e7 48%, #fff8f2 100%);
+    color: #161521;
     font-family: var(--font-sans);
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
@@ -33,7 +36,42 @@
   }
 
   button,
-  input {
+  input,
+  textarea {
     font: inherit;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    background: rgba(255, 255, 255, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.58);
+    backdrop-filter: blur(20px);
+    box-shadow: 0 20px 70px rgba(30, 23, 19, 0.07);
+  }
+
+  .hero-mesh {
+    background:
+      radial-gradient(circle, rgba(255, 140, 98, 0.26), transparent 68%),
+      radial-gradient(circle at 70% 30%, rgba(57, 214, 195, 0.2), transparent 60%);
+  }
+
+  .noise {
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.2)),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.08' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.032'/%3E%3C/svg%3E");
+    mix-blend-mode: multiply;
+  }
+
+  .subject-card:nth-child(3n + 1) .subject-sheen {
+    background: radial-gradient(circle at top left, rgba(255, 141, 99, 0.18), transparent 64%);
+  }
+
+  .subject-card:nth-child(3n + 2) .subject-sheen {
+    background: radial-gradient(circle at top left, rgba(57, 214, 195, 0.18), transparent 64%);
+  }
+
+  .subject-card:nth-child(3n) .subject-sheen {
+    background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.14), transparent 64%);
   }
 }

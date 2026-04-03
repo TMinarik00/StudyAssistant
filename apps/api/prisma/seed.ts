@@ -8,7 +8,7 @@ const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
 
 async function main() {
-  await replaceQuestionBank(prisma, questionBankSchema.parse(questionBank), "Demo farmakologija");
+  await replaceQuestionBank(prisma, questionBankSchema.parse(questionBank), "Training");
   await prisma.player.deleteMany({
     where: {
       nickname: {

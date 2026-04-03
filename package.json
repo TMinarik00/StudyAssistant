@@ -13,7 +13,7 @@
     "prisma:seed": "npm run prisma:seed --workspace apps/api",
     "questions:import": "npm run questions:import --workspace apps/api",
     "docker:up": "docker compose up --build api db",
-    "docker:seed": "docker compose run --rm seed",
+    "docker:seed": "npm run prisma:seed --workspace apps/api",
     "docker:down": "docker compose down"
   },
   "devDependencies": {
